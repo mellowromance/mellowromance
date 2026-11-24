@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "game",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\ssh\\AppData\\Local\\Temp\\claude\\d98623ba94b69749\\93d6fb16-28d4-4c44-bfcb-5107e7f7f807\\scratchpad\\serve.ps1", "-Root", "C:\\Users\\ssh\\Desktop\\3D Claude Project Test\\game", "-Port", "8123"],
+      "port": 8123
+    }
+  ]
+}

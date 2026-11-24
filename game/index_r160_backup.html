@@ -1,0 +1,908 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Little Room</title>
+<style>
+  :root {
+    --ink: #5a4652;
+    --card: rgba(255, 255, 255, 0.82);
+    --line: #eadfe6;
+    --accent: #f19bb6;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #ffffff; }
+  body { font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif; color: var(--ink); }
+  canvas { display: block; touch-action: none; }
+
+  #help {
+    position: fixed; top: 16px; left: 16px; padding: 14px 16px 12px;
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    backdrop-filter: blur(6px); font-size: 13px; line-height: 1.7; user-select: none;
+    box-shadow: 0 4px 18px rgba(90, 70, 82, 0.08); max-width: calc(100vw - 32px);
+  }
+  #help h1 { margin: 0 0 6px; font-size: 14px; letter-spacing: 0.04em; }
+  #help h1 span { color: var(--accent); }
+  #help kbd {
+    display: inline-block; min-width: 22px; padding: 0 6px; margin-right: 2px;
+    border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px;
+    background: #fff; font: 600 11px/18px inherit; text-align: center;
+  }
+  #help .hint { margin-top: 6px; font-size: 11px; opacity: 0.6; }
+  #help.hidden { display: none; }
+
+  #stick, #jumpBtn { display: none; }
+  @media (pointer: coarse) {
+    #stick {
+      display: block; position: fixed; left: 28px; bottom: 28px; width: 120px; height: 120px;
+      border-radius: 50%; background: rgba(255,255,255,0.6); border: 1px solid var(--line);
+      touch-action: none;
+    }
+    #knob {
+      position: absolute; left: 50%; top: 50%; width: 52px; height: 52px; margin: -26px 0 0 -26px;
+      border-radius: 50%; background: #fff; border: 2px solid var(--accent);
+    }
+    #jumpBtn {
+      display: block; position: fixed; right: 28px; bottom: 40px; width: 76px; height: 76px;
+      border-radius: 50%; border: 2px solid var(--accent); background: rgba(255,255,255,0.8);
+      color: var(--ink); font: 700 13px inherit; touch-action: none;
+    }
+    #help .desk { display: none; }
+  }
+</style>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+</head>
+<body>
+<div id="help">
+  <h1>Little Room <span>♡</span></h1>
+  <div class="desk">
+    <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / 방향키 &nbsp;이동</div>
+    <div><kbd>Shift</kbd> 달리기 &nbsp;·&nbsp; <kbd>Space</kbd> 점프 &nbsp;·&nbsp; <kbd>E</kbd> 손 흔들기</div>
+    <div>마우스 드래그 카메라 회전 &nbsp;·&nbsp; 휠 줌</div>
+    <div><kbd>O</kbd> 외곽선 &nbsp;·&nbsp; <kbd>H</kbd> 도움말 숨기기</div>
+  </div>
+  <div class="hint">터치: 왼쪽 스틱 이동 · 화면 드래그 카메라</div>
+</div>
+<div id="stick"><div id="knob"></div></div>
+<button id="jumpBtn">JUMP</button>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* =========================================================
+   CONFIG
+   ========================================================= */
+const ROOM = { size: 16, wallH: 4.2 };
+const MOVE = { walk: 1.9, run: 4.0, jump: 4.6, gravity: 14, radius: 0.24 };
+
+const PALETTE = {
+  skin: '#fde9de', hair: '#2a2129', blouse: '#fdfbfd', white: '#ffffff',
+  mint: '#bdeedf', lilac: '#cbc3f3', pink: '#f9c9d8', pinkDeep: '#f19bb6',
+  sky: '#b7e2f6', butter: '#fff0a8', shoe: '#f5b5cc', outline: '#6a5260',
+  dress: '#fbf9fc', frill: '#e6dcf4', ribbon: '#f5bfd2', pad: '#f6b1c7', sole: '#f2d2df', earOut: '#f3eef6',
+};
+const SHOW_CAT_EARS = true;
+
+/* Mesh detail: every round primitive's segment count is multiplied by DETAIL (integer).
+   1 = chunky low-poly look, 2 = finer, 3 = very smooth.
+   Body/clothes are built at DETAIL_BODY, head + hair + headdress at DETAIL_HEAD. */
+const DETAIL_BODY = 1, DETAIL_HEAD = 2;
+let DETAIL = DETAIL_BODY;
+class Cyl extends THREE.CylinderGeometry {
+  constructor(rt, rb, h, rs = 8, hs = 1, open, ts, tl) { super(rt, rb, h, rs * DETAIL, hs, open, ts, tl); }
+}
+class Sph extends THREE.SphereGeometry {
+  constructor(r, ws = 8, hs = 6, ps, pl, ts, tl) { super(r, ws * DETAIL, hs * DETAIL, ps, pl, ts, tl); }
+}
+class Cone extends THREE.ConeGeometry {
+  constructor(r, h, rs = 8, hs = 1, open, ts, tl) { super(r, h, rs * DETAIL, hs, open, ts, tl); }
+}
+class Torus extends THREE.TorusGeometry {
+  constructor(r, tube, rs = 4, ts = 8, arc) { super(r, tube, rs * DETAIL, ts * DETAIL, arc); }
+}
+
+/* =========================================================
+   RENDERER / SCENE
+   ========================================================= */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#ffffff');
+scene.fog = new THREE.Fog('#ffffff', 16, 34);
+
+const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.05, 100);
+
+scene.add(new THREE.HemisphereLight('#ffffff', '#efe4ea', 1.9));
+const sun = new THREE.DirectionalLight('#ffffff', 1.5);
+sun.position.set(4, 9, 5);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -9, right: 9, top: 9, bottom: -9, near: 1, far: 30 });
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.02;
+sun.shadow.radius = 4;
+scene.add(sun);
+
+/* =========================================================
+   HELPERS
+   ========================================================= */
+const matCache = new Map();
+function mat(color, { flat = true, side = THREE.FrontSide } = {}) {
+  const key = color + flat + side;
+  if (!matCache.has(key)) matCache.set(key, new THREE.MeshLambertMaterial({ color, flatShading: flat, side }));
+  return matCache.get(key);
+}
+
+const outlineMat = new THREE.ShaderMaterial({
+  uniforms: { thickness: { value: 0.0042 }, color: { value: new THREE.Color(PALETTE.outline) } },
+  vertexShader: `uniform float thickness;
+    void main(){ vec3 p = position + normal * thickness;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0); }`,
+  fragmentShader: `uniform vec3 color; void main(){ gl_FragColor = vec4(color, 1.0); }`,
+  side: THREE.BackSide,
+});
+const outlines = [];
+function addOutline(mesh) {
+  const o = new THREE.Mesh(mesh.geometry, outlineMat);
+  o.raycast = () => {};
+  mesh.add(o);
+  outlines.push(o);
+}
+
+/** Create a mesh, attach to parent, optional outline. */
+function part(geo, material, parent, pos = [0, 0, 0], opt = {}) {
+  const m = new THREE.Mesh(geo, material);
+  m.position.set(...pos);
+  if (opt.rot) m.rotation.set(...opt.rot);
+  if (opt.scale) m.scale.set(...opt.scale);
+  m.castShadow = opt.shadow !== false;
+  parent.add(m);
+  if (opt.outline !== false) addOutline(m);
+  return m;
+}
+
+/** Wave the bottom ring of a cylinder out/up → pleats, hair strands, frills.
+    One wave per 2 original segments, so the pleat count stays the same at any DETAIL. */
+function zigzagBottom(geo, out = 1.08, up = 0) {
+  const { radialSegments, heightSegments } = geo.parameters;
+  const pos = geo.attributes.position, row = radialSegments + 1;
+  for (let i = 0; i < row; i++) {
+    const w = 0.5 + 0.5 * Math.cos(Math.PI * i / DETAIL);
+    const k = heightSegments * row + i;
+    pos.setX(k, pos.getX(k) * (1 + (out - 1) * w));
+    pos.setZ(k, pos.getZ(k) * (1 + (out - 1) * w));
+    pos.setY(k, pos.getY(k) + up * w);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/** Anime head shape (after 01_REF/3D Modeling_LovPoly/Face):
+    round cranium + round back of skull, a slightly flat front face plane whose cheeks taper
+    into a small chin, and a flat jaw UNDERSIDE that runs from the chin back to the nape —
+    that underside is what separates the face from the neck.
+    Works radially on unit directions, so the face decal (slightly larger radius) gets the
+    exact same shape and stays glued to the head. */
+const smooth = (a, b, v) => { const t = Math.min(1, Math.max(0, (v - a) / (b - a))); return t * t * (3 - 2 * t); };
+function headShape(x, y, z) {
+  if (y > 0) {                         // rounded-cube cranium only (upper half) → egg, never a boxy jaw
+    const d4 = Math.pow(x * x * x * x + y * y * y * y + z * z * z * z, 0.25) || 1;
+    const k = 1 + 0.2 * (1 / d4 - 1) * smooth(0, 0.4, y);
+    x *= k; y *= k; z *= k;
+  }
+  const t = smooth(0, 1, -y);          // 0 at/above the eye line → 1 at the bottom
+  const f = smooth(-0.3, 0.7, z);      // 0 back of head → 1 face side
+  if (z > 0) z *= 0.94;                // flatter front face plane
+  const mid = 1 - Math.min(1, Math.abs(x) * 1.6);              // 1 at the centre line
+  // baby face: full round cheeks, SHORT lower face, small soft chin (no long V jaw)
+  x *= 1 - 0.26 * f * Math.pow(t, 1.3) - 0.1 * (1 - f) * t;
+  y *= 1 + 0.05 * f * t * mid;
+  z += 0.03 * f * t * mid;
+  const jawFloor = -0.52 - 0.2 * smooth(-0.6, 0.95, z);        // jaw underside: nape (high) → chin (low), short
+  if (y < jawFloor) y = jawFloor;
+  if (y > 0) x *= 1 - 0.04 * y;        // crown a touch narrower
+  return [x, y, z];
+}
+function deformHead(geo) {
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const len = Math.hypot(x, y, z) || 1;
+    const [nx, ny, nz] = headShape(x / len, y / len, z / len);
+    pos.setXYZ(i, nx * len, ny * len, nz * len);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/** Ribbon bow. Geometry is shared per DETAIL level, and only the two wings get an outline
+    (tails and knot are too small to need one) to keep draw calls down. */
+const bowGeoCache = {};
+function makeBow(color, size = 1, knotColor = color) {
+  const G = bowGeoCache[DETAIL] || (bowGeoCache[DETAIL] = {
+    wing: new Cone(0.028, 0.052, 4), tail: new THREE.BoxGeometry(0.012, 0.04, 0.008), knot: new Sph(0.013, 6, 4),
+  });
+  const g = new THREE.Group();
+  for (const s of [1, -1]) {
+    part(G.wing, mat(color), g, [s * 0.027, 0, 0], { rot: [0, 0, s * Math.PI / 2], scale: [1, 1, 0.55], outline: size >= 1 });
+    part(G.tail, mat(color), g, [s * 0.012, -0.024, -0.002], { rot: [0, 0, s * 0.35], outline: false });
+  }
+  part(G.knot, mat(knotColor), g, [0, 0, 0.004], { outline: false });
+  g.scale.setScalar(size);
+  return g;
+}
+
+/* =========================================================
+   FACE TEXTURE — planar front projection ("flat" decal seen from the front).
+   The canvas is a rectangle in the head's local x/y plane (on-screen units, i.e. after
+   the head's x-squash), projected straight along +Z onto the front-facing facets.
+   ========================================================= */
+const FACE = {
+  w: 0.36, top: 0.09, bottom: -0.15,  // projection window in head-local units (head r = 0.2, y 0 = head-mesh centre)
+  ppu: 2400,                          // canvas pixels per unit
+  scale: 1.2,                         // feature size multiplier
+  eyeScale: 1.0,                      // extra multiplier for the eyes only
+  eyeX: 0.084, eyeY: -0.02, noseY: -0.066, mouthY: -0.088,
+};
+/** Front-facing triangles of `headGeo` with UVs projected along +Z into the FACE window.
+    `sx` = the head mesh's x scale, so the canvas is authored in on-screen proportions. */
+function planarFaceGeometry(headGeo, sx, sz = 0.95, minFacing = 0.5) {
+  const src = headGeo.index ? headGeo.toNonIndexed() : headGeo;
+  const p = src.attributes.position, pos = [], uv = [];
+  const h = FACE.top - FACE.bottom;
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  for (let i = 0; i < p.count; i += 3) {
+    // facing test in on-screen (scaled) space: only facets that really face the front get
+    // the decal, so the projection never smears eyes/blush across the side of the head
+    a.set(p.getX(i) * sx, p.getY(i), p.getZ(i) * sz);
+    b.set(p.getX(i + 1) * sx, p.getY(i + 1), p.getZ(i + 1) * sz);
+    c.set(p.getX(i + 2) * sx, p.getY(i + 2), p.getZ(i + 2) * sz);
+    const n = b.sub(a).cross(c.sub(a)).normalize();
+    if (n.z < minFacing) continue;
+    for (let j = 0; j < 3; j++) {
+      const x = p.getX(i + j), y = p.getY(i + j), z = p.getZ(i + j);
+      pos.push(x, y, z);
+      uv.push((x * sx + FACE.w / 2) / FACE.w, (y - FACE.bottom) / h);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function makeFaceTexture(closed) {
+  const W = Math.round(FACE.w * FACE.ppu), H = Math.round((FACE.top - FACE.bottom) * FACE.ppu);
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  const toY = (y) => (FACE.top - y) * FACE.ppu;
+  const toX = (x) => W / 2 + x * FACE.ppu;
+  // drawing below is authored in "design px"; k converts them to canvas px at FACE.scale
+  const k = FACE.scale * (0.2 / 427) * FACE.ppu;
+
+  // Doll face (after the attached ref): big round eyes set wide and low — dark brown rim,
+  // aqua-teal glow in the lower iris, big pupil, separated spiky lashes top and bottom,
+  // pink lid shadow, large soft blush, tiny nose, small round "o" mouth.
+  const eyeY = toY(FACE.eyeY), R = 76;
+  const INK = '#1b110e';
+  g.lineCap = 'round'; g.lineJoin = 'round';
+
+  const spike = (bx, by, dx, dy, len, w, curl) => {
+    const px = -dy, py = dx;
+    g.beginPath();
+    g.moveTo(bx + px * w, by + py * w);
+    g.quadraticCurveTo(bx + dx * len * 0.6, by + dy * len * 0.6, bx + dx * len + curl, by + dy * len - len * 0.18);
+    g.quadraticCurveTo(bx + dx * len * 0.5, by + dy * len * 0.5, bx - px * w, by - py * w);
+    g.closePath(); g.fill();
+  };
+
+  for (const s of [-1, 1]) {
+    const cx = toX(s * FACE.eyeX);
+    g.save();
+    g.translate(cx, eyeY);
+    g.scale(s * k * FACE.eyeScale, k * FACE.eyeScale);   // local +x = outer corner
+
+    // big soft blush under the eye
+    const bl = g.createRadialGradient(8, R + 52, 8, 8, R + 52, 80);
+    bl.addColorStop(0, 'rgba(250,135,160,0.55)');
+    bl.addColorStop(0.6, 'rgba(250,150,170,0.25)');
+    bl.addColorStop(1, 'rgba(250,150,170,0)');
+    g.fillStyle = bl;
+    g.beginPath(); g.ellipse(8, R + 52, 84, 62, 0, 0, Math.PI * 2); g.fill();
+
+    // pink lid shadow
+    const ls = g.createRadialGradient(6, -R * 0.75, 10, 6, -R * 0.75, R * 1.15);
+    ls.addColorStop(0, 'rgba(240,140,170,0.42)');
+    ls.addColorStop(1, 'rgba(240,140,170,0)');
+    g.fillStyle = ls;
+    g.beginPath(); g.ellipse(6, -R * 0.75, R * 1.25, R * 0.7, 0, 0, Math.PI * 2); g.fill();
+
+    g.fillStyle = INK;
+    if (!closed) {
+      // white of the eye
+      g.beginPath(); g.ellipse(0, 0, R, R * 1.03, 0, 0, Math.PI * 2);
+      g.fillStyle = '#fffafb'; g.fill();
+      g.save(); g.clip();
+      // iris: dark brown with an aqua glow rising from the bottom
+      const ir = R * 0.84, iy = 8;
+      g.fillStyle = '#2a1810';
+      g.beginPath(); g.arc(0, iy, ir, 0, Math.PI * 2); g.fill();
+      g.save();
+      g.beginPath(); g.arc(0, iy, ir * 0.88, 0, Math.PI * 2); g.clip();
+      const glow = g.createRadialGradient(0, iy + ir * 0.62, 4, 0, iy + ir * 0.5, ir * 0.95);
+      glow.addColorStop(0, 'rgba(150,245,235,1)');
+      glow.addColorStop(0.35, 'rgba(70,195,200,0.95)');
+      glow.addColorStop(0.7, 'rgba(45,120,125,0.55)');
+      glow.addColorStop(1, 'rgba(45,100,105,0)');
+      g.fillStyle = glow; g.fillRect(-ir, iy - ir, ir * 2, ir * 2);
+      g.restore();
+      // pupil
+      g.fillStyle = '#0b0605';
+      g.beginPath(); g.arc(0, iy - 4, ir * 0.44, 0, Math.PI * 2); g.fill();
+      // top shadow from the lid
+      const ts = g.createLinearGradient(0, -R, 0, -R * 0.25);
+      ts.addColorStop(0, 'rgba(25,12,8,0.75)'); ts.addColorStop(1, 'rgba(25,12,8,0)');
+      g.fillStyle = ts; g.fillRect(-R, -R * 1.1, R * 2, R * 0.9);
+      // highlights
+      g.fillStyle = '#ffffff';
+      // (× s undoes the per-eye mirror, so both eyes catch the light on the viewer's right)
+      g.beginPath(); g.arc(s * ir * 0.36, iy - ir * 0.36, 14, 0, Math.PI * 2); g.fill();
+      g.beginPath(); g.arc(-s * ir * 0.36, iy + ir * 0.36, 6, 0, Math.PI * 2); g.fill();
+      g.beginPath(); g.arc(s * ir * 0.1, iy + ir * 0.58, 3, 0, Math.PI * 2); g.fill();
+      g.restore();
+
+      // thick upper lid line
+      g.strokeStyle = INK; g.lineWidth = 13;
+      g.beginPath(); g.ellipse(0, 3, R + 3, R * 1.03 + 2, 0, Math.PI * 1.04, Math.PI * 1.99); g.stroke();
+      // separated spiky upper lashes, longer toward the outer corner
+      g.fillStyle = INK;
+      for (let k = 0; k < 6; k++) {
+        const a = Math.PI * (1.22 + k * 0.142);
+        const dx = Math.cos(a), dy = Math.sin(a);
+        spike(dx * (R + 6), dy * (R * 1.03 + 6) + 3, dx, dy, 16 + k * 5.5, 4.2, k * 1.5);
+      }
+      // thin lower lid + separated lower lashes
+      g.strokeStyle = 'rgba(55,32,25,0.75)'; g.lineWidth = 3;
+      g.beginPath(); g.ellipse(0, 0, R * 0.98, R * 1.01, 0, Math.PI * 0.1, Math.PI * 0.9); g.stroke();
+      g.fillStyle = 'rgba(40,22,16,0.9)';
+      for (let k = 0; k < 5; k++) {
+        const a = Math.PI * (0.2 + k * 0.15);
+        const dx = Math.cos(a), dy = Math.sin(a);
+        spike(dx * (R + 1), dy * (R * 1.01 + 1), dx, dy, 15 - Math.abs(k - 1) * 1.5, 2.6, 0);
+      }
+    } else {
+      // closed: downward arc with lashes hanging below
+      g.strokeStyle = INK; g.lineWidth = 12;
+      g.beginPath(); g.ellipse(0, R * 0.05, R, R * 0.5, 0, Math.PI * 0.04, Math.PI * 0.96); g.stroke();
+      g.fillStyle = INK;
+      for (let k = 0; k < 6; k++) {
+        const a = Math.PI * (0.12 + k * 0.15);
+        const dx = Math.cos(a), dy = Math.sin(a);
+        spike(dx * R, R * 0.05 + dy * R * 0.5, dx * 0.4, 0.92, 14 + (5 - k) * 2, 3.5, 0);
+      }
+    }
+    g.restore();
+  }
+
+  // tiny nose
+  g.save(); g.translate(W / 2, toY(FACE.noseY)); g.scale(k, k);
+  g.fillStyle = 'rgba(225,135,140,0.55)';
+  g.beginPath(); g.ellipse(0, 0, 5, 3.5, 0, 0, Math.PI * 2); g.fill();
+  g.restore();
+
+  // small straight "-" mouth
+  g.save(); g.translate(W / 2, toY(FACE.mouthY)); g.scale(k, k);
+  g.strokeStyle = '#c4566f'; g.lineWidth = 4; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(-13, 0); g.lineTo(13, 0); g.stroke();
+  g.restore();
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+/* =========================================================
+   ROOM — white box. `colliders` is where future props register
+   their footprint ({minX,maxX,minZ,maxZ}) for collision.
+   ========================================================= */
+const colliders = [];
+function buildRoom() {
+  const room = new THREE.Group();
+  const half = ROOM.size / 2;
+
+  const tc = document.createElement('canvas');
+  tc.width = tc.height = 256;
+  const g = tc.getContext('2d');
+  g.fillStyle = '#fbfafb'; g.fillRect(0, 0, 256, 256);
+  g.strokeStyle = '#eee8ec'; g.lineWidth = 3; g.strokeRect(0, 0, 256, 256);
+  const floorTex = new THREE.CanvasTexture(tc);
+  floorTex.colorSpace = THREE.SRGBColorSpace;
+  floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
+  floorTex.repeat.set(ROOM.size, ROOM.size);
+  floorTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(ROOM.size, ROOM.size),
+    new THREE.MeshLambertMaterial({ map: floorTex }));
+  floor.rotation.x = -Math.PI / 2;
+  floor.receiveShadow = true;
+  room.add(floor);
+
+  const wallMat = new THREE.MeshLambertMaterial({ color: '#fdfcfd', emissive: '#ffffff', emissiveIntensity: 0.32 });
+  const baseMat = new THREE.MeshLambertMaterial({ color: '#f2edf1' });
+  const t = 0.2;
+  const walls = [
+    [0, -half - t / 2, ROOM.size + 2 * t, t],
+    [0, half + t / 2, ROOM.size + 2 * t, t],
+    [-half - t / 2, 0, t, ROOM.size],
+    [half + t / 2, 0, t, ROOM.size],
+  ];
+  for (const [x, z, w, d] of walls) {
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(w, ROOM.wallH, d), wallMat);
+    wall.position.set(x, ROOM.wallH / 2, z);
+    wall.receiveShadow = true;
+    room.add(wall);
+    const base = new THREE.Mesh(new THREE.BoxGeometry(w === t ? 0.04 : w, 0.12, d === t ? 0.04 : d), baseMat);
+    base.position.set(x - Math.sign(x) * t / 2, 0.06, z - Math.sign(z) * t / 2);
+    room.add(base);
+  }
+  scene.add(room);
+}
+buildRoom();
+
+/* =========================================================
+   CHARACTER — low-poly doll, ~4.5 heads tall (1.45 units)
+   Faces +Z. Pivot groups: hips → legs / chest → arms, head → hair
+   ========================================================= */
+function createCharacter() {
+  const C = PALETTE;
+  const root = new THREE.Group();
+  const body = new THREE.Group(); root.add(body);
+  // Proportions (~5.5 heads, ~1.7 tall): knee 0.52 · hip joint 1.02 · waist 1.08 · shoulders 1.26 · chin 1.37 · head top ~1.70
+  // Leg lathes are authored short and stretched with LEG_Y so the long-legged proportions are one knob.
+  const LEG = { thigh: 0.5, shin: 0.45, w: 1.3 };
+  const hips = new THREE.Group(); hips.position.y = 1.08; body.add(hips);
+  const DS = { side: THREE.DoubleSide };
+  const SKIN = mat(C.skin);
+
+  // Body after the low-poly dress model ref, built from sculpted LATHE PROFILES (one continuous
+  // silhouette per part: waist → chest → shoulder slope → collar, thigh → knee → flared boot,
+  // sleeve → wrist → pointed trumpet flare) instead of stacked cylinders.
+  const DRESS = mat(C.dress, DS);
+
+  /** Revolve a [radius, y] profile (bottom → top) into a faceted shell; sz flattens front/back. */
+  const lathe = (profile, segs = 8, sz = 1) => {
+    const g = new THREE.LatheGeometry(profile.map(([r, y]) => new THREE.Vector2(r, y)), segs * DETAIL);
+    if (sz !== 1) g.scale(1, 1, sz);
+    return g;
+  };
+  // ---- A-line skirt: one flared shell from the waist, hem at mid-thigh, two frilled tiers
+  const skirt = new THREE.Group(); hips.add(skirt);
+  part(lathe([[0.165, -0.2], [0.155, -0.16], [0.135, -0.1], [0.108, -0.045], [0.088, -0.005], [0.078, 0.02]], 8, 0.92),
+    DRESS, skirt, [0, 0, -0.004]);
+  // pleated frill rings (open zigzag cylinders): upper tier white, hem frill lilac
+  part(zigzagBottom(new Cyl(0.136, 0.15, 0.05, 12, 1, true), 1.1, 0), mat(C.white, DS), skirt, [0, -0.115, 0], { scale: [1, 1, 0.92] });
+  part(zigzagBottom(new Cyl(0.158, 0.172, 0.05, 12, 1, true), 1.12, 0), mat(C.frill, DS), skirt, [0, -0.185, 0], { scale: [1, 1, 0.92] });
+  part(new Cyl(0.08, 0.095, 0.1, 8), mat(C.white), hips, [0, -0.05, 0], { scale: [1, 1, 0.9] }); // bloomers / pelvis
+
+  // ---- legs: thin straight skin legs (thigh 0.32 + shin 0.27), lumpy leg warmers, chunky platform shoes
+  const legs = [];
+  for (const s of [1, -1]) {
+    const hip = new THREE.Group(); hip.position.set(0.05 * s, -0.06, 0); hips.add(hip);
+    const ty = LEG.thigh / 0.32, sy = LEG.shin / 0.27, lw = LEG.w;   // stretch factors for the authored lathes
+    part(lathe([[0.034, -0.335], [0.036, -0.3], [0.04, -0.2], [0.045, -0.1], [0.046, -0.03], [0.04, 0.02]], 7, 0.95),
+      SKIN, hip, [0, 0, 0], { scale: [lw, ty, lw] });
+    const knee = new THREE.Group(); knee.position.y = -LEG.thigh; hip.add(knee);
+    part(new Sph(0.037 * lw, 6, 4), SKIN, knee, [0, 0, 0], { outline: false });
+    part(lathe([[0.026, -0.285], [0.027, -0.25], [0.031, -0.13], [0.035, -0.05], [0.036, 0.0], [0.034, 0.03]], 7, 0.95),
+      SKIN, knee, [0, 0, 0], { scale: [lw, sy, lw] });
+    // fluffy leg warmer: one lumpy lathe tube, just below the knee down to the ankle, ruffled top
+    part(lathe([[0.047, -0.245], [0.056, -0.225], [0.05, -0.205], [0.06, -0.178], [0.051, -0.152], [0.061, -0.126],
+      [0.052, -0.1], [0.06, -0.075], [0.051, -0.052], [0.056, -0.034]], 8, 0.95), mat(C.white), knee, [0, 0, 0], { scale: [lw, sy, lw] });
+    part(zigzagBottom(new Cyl(0.05, 0.057, 0.034, 10, 1, true), 1.22, 0), mat(C.frill, DS), knee, [0, -0.034 * sy, 0], { scale: [lw, 1, lw * 0.95] });
+    const ankle = new THREE.Group(); ankle.position.y = -LEG.shin; knee.add(ankle);
+    // platform shoe: pale outsole, thick white platform, pink rounded toe box, mint bow
+    part(new Cyl(0.054, 0.054, 0.012, 8), mat(C.sole), ankle, [0, -0.064, 0.03], { scale: [1, 1, 1.5] });
+    part(new Cyl(0.05, 0.05, 0.03, 8), mat(C.white), ankle, [0, -0.043, 0.03], { scale: [1, 1, 1.5] });
+    part(new Sph(0.049, 7, 5), mat(C.shoe), ankle, [0, -0.01, 0.03], { scale: [1, 0.85, 1.35] });
+    const sb = makeBow(C.mint, 0.9, C.sky); sb.position.set(0, 0.028, 0.055); sb.rotation.x = -1.2; ankle.add(sb);
+    legs.push({ hip, knee, ankle, s });
+  }
+
+  // ---- bodice: waist → chest → sloped shoulders → stand collar, one shell
+  const chest = new THREE.Group(); hips.add(chest);
+  part(lathe([[0.068, 0.0], [0.066, 0.035], [0.072, 0.08], [0.082, 0.125], [0.084, 0.16], [0.075, 0.185], [0.052, 0.205],
+    [0.04, 0.222], [0.037, 0.228], [0.036, 0.255], [0.032, 0.258]], 8, 0.84), DRESS, chest, [0, 0, 0]);
+  const neck = part(new Cyl(0.027, 0.029, 0.11, 7), SKIN, chest, [0, 0.27, -0.006]);   // short: only a sliver shows under the chin
+  neck.receiveShadow = true;
+  part(new Cyl(0.042, 0.044, 0.018, 8, 1, true), mat(C.ribbon, DS), chest, [0, 0.243, 0], { scale: [1, 1, 0.84], outline: false });
+  const neckBow = makeBow(C.ribbon, 1.3, C.pinkDeep); neckBow.position.set(0, 0.243, 0.036); chest.add(neckBow);
+  for (const [y, z] of [[0.145, 0.07], [0.1, 0.065]]) part(new Sph(0.009, 5, 3), mat(C.pinkDeep), chest, [0, y, z], { scale: [1, 1, 0.6] });
+
+  // ---- arms (upper 0.18, forearm+hand ~0.21): puffy shoulder balloon → sleeve flaring to a frilled cuff → mitten hand
+  const arms = [];
+  for (const s of [1, -1]) {
+    const sh = new THREE.Group(); sh.position.set(0.08 * s, 0.18, 0); chest.add(sh);
+    part(new Sph(0.05, 7, 5), DRESS, sh, [0.004 * s, -0.012, 0], { scale: [1, 0.95, 0.95] });
+    part(lathe([[0.03, -0.18], [0.029, -0.13], [0.03, -0.08], [0.036, -0.04], [0.042, -0.01]], 6), DRESS, sh, [0, 0, 0]);
+    const el = new THREE.Group(); el.position.y = -0.18; sh.add(el);
+    part(lathe([[0.056, -0.12], [0.05, -0.095], [0.04, -0.065], [0.032, -0.035], [0.03, 0.0], [0.03, 0.02]], 7), DRESS, el, [0, 0, 0]);
+    part(zigzagBottom(new Cyl(0.05, 0.056, 0.024, 10, 1, true), 1.2, 0), mat(C.frill, DS), el, [0, -0.112, 0]);   // frilled cuff
+    part(new Cyl(0.021, 0.023, 0.06, 6), SKIN, el, [0, -0.14, 0]);
+    part(new Sph(0.033, 6, 5), SKIN, el, [0, -0.178, 0.004], { scale: [0.9, 1.1, 0.78] });                        // mitten hand
+    part(new Sph(0.014, 5, 4), SKIN, el, [-0.026 * s, -0.168, 0.012], { outline: false });                         // thumb
+    arms.push({ sh, el, s });
+  }
+
+  // ---- head + face (head modelled at r=0.2, group origin = chin level, scaled 0.9)
+  DETAIL = DETAIL_HEAD;
+  const head = new THREE.Group(); head.position.y = 0.272; head.scale.setScalar(0.88); chest.add(head);
+  const HY = 0.168;   // head-mesh centre above the chin (jaw underside sits ~0.168 below the centre)
+  // faceted egg / rounded-cube head: 12 segments x 10 rows, narrowed (x 0.86) so the face isn't wide
+  const headGeo = deformHead(new Sph(0.2, 6, 5));
+  const headMesh = part(headGeo, mat(C.skin), head, [0, HY, 0], { scale: [0.86, 1, 0.95] });
+  const faceOpen = makeFaceTexture(false), faceClosed = makeFaceTexture(true);
+  const faceMat = new THREE.MeshLambertMaterial({
+    map: faceOpen, transparent: true, depthWrite: false, flatShading: true,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  });
+  // Face decal = the head's own front-facing facets (same triangles → identical flat shading)
+  // with a PLANAR projection: u/v come straight from the facet's x/y as seen from the front,
+  // so the face is never bent around the sphere. Back-facing facets are dropped.
+  const faceGeo = planarFaceGeometry(headGeo, 0.86);
+  const face = new THREE.Mesh(faceGeo, faceMat);
+  face.scale.setScalar(1.004);
+  headMesh.add(face);
+  // small pointed fin ears at eye-to-nose height: flat blade, tip pointing back / up / a little out
+  for (const s of [1, -1]) {
+    // 3 sides at DETAIL_HEAD → flat blade, not a square pyramid
+    part(new Cone(0.045, 0.13, 1.5), mat(C.skin), head, [0.172 * s, HY - 0.045, 0],
+      { rot: [-0.9, 0, -s * 0.35], scale: [0.4, 1, 1] });
+  }
+
+  // ---- hair (hime cut). Shells are the head's own shape scaled 1.07 (same grid) → always just outside the skull.
+  const hair = new THREE.Group(); hair.position.y = HY; head.add(hair);
+  const H = mat(C.hair), H2 = mat(C.hair, { side: THREE.DoubleSide });
+  const HS = [0.86, 1, 0.95], HR = 0.2 * 1.07;
+  // crown cap (full circle, top 3 rows) + back/side shell (open at the face, ends at eye level)
+  part(deformHead(new Sph(HR, 6, 1.5, 0, Math.PI * 2, 0, Math.PI * 0.3)), H2, hair, [0, 0, 0], { scale: HS });
+  part(deformHead(new Sph(HR, 4, 1, Math.PI * 5 / 6, Math.PI * 4 / 3, Math.PI * 0.3, Math.PI * 0.2)), H2, hair, [0, 0, 0], { scale: HS });
+  // long blunt bangs: straight-cut line just touching the top of the eyes
+  part(new Cyl(0.15, 0.224, 0.15, 7, 1, true, -1.2, 2.4),
+    H2, hair, [0, 0.095, 0.004], { scale: [0.88, 1, 0.97] });
+  // hime sidelocks: straight blunt curtains framing the cheeks, cut just below the chin
+  for (const s of [1, -1]) {
+    part(new THREE.BoxGeometry(0.04, 0.27, 0.085), H, hair, [0.178 * s, -0.08, 0.06], { rot: [0, -0.18 * s, -0.03 * s] });
+    const tip = makeBow(C.mint, 0.55); tip.position.set(0.18 * s, -0.215, 0.105); hair.add(tip);
+  }
+  // long straight back hair (hime cut): upper panel swings with hairBack, lower panel with hairLow; blunt hem at the waist
+  const hairBack = new THREE.Group(); hair.add(hairBack);
+  part(new Cyl(0.222, 0.232, 0.34, 12, 1, true, Math.PI - 1.25, 2.5), H2, hairBack, [0, -0.15, 0], { scale: HS });
+  const hairLow = new THREE.Group(); hairLow.position.y = -0.31; hairBack.add(hairLow);
+  part(zigzagBottom(new Cyl(0.232, 0.24, 0.3, 12, 1, true, Math.PI - 1.2, 2.4), 1.0, 0.015),
+    H2, hairLow, [0, -0.14, 0], { scale: HS });
+  const tails = [];   // (twin tails replaced by the long hime cut; kept empty so update() needs no change)
+
+  // ---- frilly headdress + mint bows + cat ears (in a band plane tilted slightly back)
+  const band = new THREE.Group(); band.rotation.x = -0.25; hair.add(band);
+  const arc = Math.PI * 0.86;
+  part(new Torus(0.23, 0.02, 4, 18, arc), mat(C.frill), band, [0, 0, 0], { rot: [0, 0, (Math.PI - arc) / 2] });
+  for (let i = 0; i <= 12; i++) {
+    const a = -1.32 + (i / 12) * 2.64;
+    part(new Sph(i % 2 ? 0.03 : 0.036, 6, 4), mat(i % 2 ? C.white : C.frill), band,
+      [Math.sin(a) * 0.243, Math.cos(a) * 0.243, 0.012], { scale: [1, 0.85, 0.8] });
+  }
+  if (SHOW_CAT_EARS) {
+    for (const s of [1, -1]) {
+      const ear = new THREE.Group(); const a = 0.72 * s;
+      ear.position.set(Math.sin(a) * 0.21, Math.cos(a) * 0.21, -0.03); ear.rotation.z = -a * 0.9; band.add(ear);
+      part(new Cone(0.088, 0.17, 4), mat(C.earOut), ear, [0, 0.07, 0], { scale: [1, 1, 0.55], rot: [0, Math.PI / 4, 0] });
+      part(new Cone(0.056, 0.12, 4), mat(C.pad), ear, [0, 0.06, 0.026], { scale: [1, 1, 0.3], rot: [0, Math.PI / 4, 0], outline: false });
+    }
+  }
+  for (const s of [1, -1]) {
+    const a = 1.22 * s, bow = makeBow(C.mint, 1.35, C.sky);
+    bow.position.set(Math.sin(a) * 0.243, Math.cos(a) * 0.243, 0.03); bow.rotation.set(0, 0.9 * s, -a * 0.5);
+    band.add(bow);
+  }
+
+  DETAIL = DETAIL_BODY;
+  root.traverse((o) => { if (o.isMesh && o.material !== outlineMat) o.castShadow = true; });
+  face.castShadow = false;   // transparent decal must not cast its own shadow
+
+  /* ---------- animation ---------- */
+  const A = { phase: 0, hair: 0, hairV: 0, hair2: 0, hair2V: 0, blinkT: 2.5, blink: 0, wave: 0, land: 0 };
+  const lerp = THREE.MathUtils.lerp, clamp = THREE.MathUtils.clamp;
+  const damp = (cur, target, rate, dt) => lerp(cur, target, 1 - Math.exp(-rate * dt));
+
+  function update(dt, st) {
+    const t = st.time;
+    const walkW = clamp(st.speed / 1.2, 0, 1);
+    const run = st.run;
+    const airW = st.grounded ? 0 : 1;
+    // stride per cycle = 4·legLen·sin(legAmp) so the planted foot doesn't skate (legLen ≈ hip height 1.02)
+    A.phase += dt * (st.speed / lerp(1.44, 2.3, run)) * Math.PI * 2;
+    const ph = A.phase;
+
+    // emote + landing timers
+    A.wave = damp(A.wave, st.waving ? 1 : 0, 8, dt);
+    A.land = Math.max(0, A.land - dt);
+    if (st.justLanded) A.land = 0.18;
+
+    // legs
+    const legAmp = lerp(0.36, 0.6, run) * walkW;
+    const kneeAmp = lerp(0.6, 1.3, run) * walkW;
+    for (const L of legs) {
+      const p = ph + (L.s > 0 ? 0 : Math.PI);
+      let hx = -Math.sin(p) * legAmp;
+      let kx = Math.max(0, Math.cos(p)) * kneeAmp + 0.04;
+      const airHip = L.s > 0 ? -0.55 : 0.15, airKnee = L.s > 0 ? 0.95 : 0.45;
+      hx = lerp(hx, airHip, airW); kx = lerp(kx, airKnee, airW);
+      L.hip.rotation.x = damp(L.hip.rotation.x, hx, 20, dt);
+      L.knee.rotation.x = damp(L.knee.rotation.x, kx, 20, dt);
+      L.ankle.rotation.x = -(L.hip.rotation.x + L.knee.rotation.x) * 0.6;
+      L.hip.rotation.z = L.s * 0.02;
+    }
+
+    // body bob / twist / lean
+    // drop the hips while the legs are spread so the lower foot stays on the floor
+    const bob = -1.02 * (1 - Math.cos(legAmp * Math.abs(Math.sin(ph)))) * 0.85 * (1 - airW);
+    const breathe = Math.sin(t * 2.1) * 0.004 * (1 - walkW);
+    body.position.y = bob + breathe - (A.land > 0 ? Math.sin((A.land / 0.18) * Math.PI) * 0.025 : 0);
+    const squash = A.land > 0 ? Math.sin((A.land / 0.18) * Math.PI) * 0.06 : 0;
+    body.scale.set(1 + squash * 0.5, 1 - squash, 1 + squash * 0.5);
+    hips.rotation.y = Math.sin(ph) * 0.08 * walkW;
+    chest.rotation.y = -Math.sin(ph) * 0.13 * walkW;
+    chest.rotation.x = damp(chest.rotation.x, 0.03 + 0.13 * run * walkW + Math.sin(t * 2.1) * 0.012 * (1 - walkW) - airW * 0.05, 10, dt);
+    chest.rotation.z = damp(chest.rotation.z, clamp(-st.turnRate * 0.02, -0.12, 0.12), 8, dt);
+
+    // arms
+    const armAmp = lerp(0.45, 1.0, run) * walkW;
+    for (const R of arms) {
+      const p = ph + (R.s > 0 ? 0 : Math.PI);
+      let ax = Math.sin(p) * armAmp;
+      let az = R.s * (0.36 + 0.06 * run * walkW + Math.sin(t * 2.1) * 0.02);
+      let ex = -(0.3 + 0.8 * run * walkW);
+      let ez = 0;
+      ax = lerp(ax, -0.35, airW); az = lerp(az, R.s * 0.95, airW); ex = lerp(ex, -0.5, airW);
+      if (R.s < 0) { // right arm waves
+        ax = lerp(ax, -0.55, A.wave); az = lerp(az, -2.1, A.wave);
+        ex = lerp(ex, -0.45, A.wave); ez = lerp(0, Math.sin(t * 11) * 0.45 - 0.25, A.wave);
+      }
+      R.sh.rotation.x = damp(R.sh.rotation.x, ax, 16, dt);
+      R.sh.rotation.z = damp(R.sh.rotation.z, az, 16, dt);
+      R.el.rotation.x = damp(R.el.rotation.x, ex, 16, dt);
+      R.el.rotation.z = ez;
+    }
+
+    // skirt flare
+    skirt.rotation.x = damp(skirt.rotation.x, 0.1 * walkW * (0.6 + run), 8, dt);
+    skirt.rotation.z = Math.sin(ph) * 0.05 * walkW;
+    const flare = 1 + 0.05 * walkW * run + airW * Math.min(1, Math.max(0, -st.vy) * 0.12) * 0.9 + squash * 1.5;
+    skirt.scale.x = skirt.scale.z = damp(skirt.scale.x, flare, 12, dt);
+
+    // head
+    head.rotation.x = damp(head.rotation.x, -chest.rotation.x * 0.6 + Math.sin(t * 1.3) * 0.02, 8, dt);
+    head.rotation.y = Math.sin(t * 0.45) * 0.12 * (1 - walkW) * (1 - A.wave);
+    head.rotation.z = lerp(Math.sin(t * 0.7) * 0.03 * (1 - walkW), 0.14, A.wave);
+
+    // hair spring
+    const hairTarget = clamp(0.06 + 0.22 * walkW * (0.5 + run) + Math.max(0, -st.vy) * 0.06 - Math.max(0, st.vy) * 0.02
+      + Math.sin(ph * 2) * 0.03 * walkW, -0.02, 0.9);
+    A.hairV += ((hairTarget - A.hair) * 70 - A.hairV * 9) * dt; A.hair += A.hairV * dt;
+    A.hair2V += ((A.hair * 0.7 - A.hair2) * 50 - A.hair2V * 7) * dt; A.hair2 += A.hair2V * dt;
+    hairBack.rotation.x = Math.max(-0.02, A.hair * 0.5);
+    hairLow.rotation.x = Math.max(-0.05, A.hair2 * 0.8);
+    A.tailZ = damp(A.tailZ || 0, clamp(st.turnRate * 0.04, -0.35, 0.35), 5, dt);
+    for (const T of tails) {
+      const swing = Math.sin(ph + (T.s > 0 ? 0 : 1.2)) * 0.05 * walkW;
+      T.seg1.rotation.x = 0.12 + Math.max(-0.05, A.hair) * 0.9;
+      T.seg1.rotation.z = T.s * (0.34 + airW * 0.25 + A.wave * 0.05) + A.tailZ + swing;
+      T.seg2.rotation.x = Math.max(-0.1, A.hair2) * 0.8;
+      T.seg2.rotation.z = -T.s * 0.12 + A.tailZ * 0.6 + swing;
+      T.seg3.rotation.x = Math.max(-0.1, A.hair2) * 0.6;
+      T.seg3.rotation.z = -T.s * 0.06 + A.tailZ * 0.4;
+    }
+
+    // blink
+    A.blinkT -= dt;
+    if (A.blinkT <= 0) { A.blink = 0.13; A.blinkT = 2 + Math.random() * 3.5; }
+    A.blink = Math.max(0, A.blink - dt);
+    faceMat.map = A.blink > 0 ? faceClosed : faceOpen;
+  }
+
+  return { root, update };
+}
+
+const girl = createCharacter();
+scene.add(girl.root);
+
+/* =========================================================
+   INPUT
+   ========================================================= */
+const keys = {};
+const input = { jump: false, waving: false, joyX: 0, joyY: 0 };
+const helpEl = document.getElementById('help');
+
+addEventListener('keydown', (e) => {
+  keys[e.code] = true;
+  if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) input.jump = true; }
+  if (e.code === 'KeyE') input.waving = true;
+  if (e.code === 'KeyO' && !e.repeat) outlines.forEach((o) => (o.visible = !o.visible));
+  if (e.code === 'KeyH' && !e.repeat) helpEl.classList.toggle('hidden');
+  if (e.code.startsWith('Arrow')) e.preventDefault();
+});
+addEventListener('keyup', (e) => { keys[e.code] = false; if (e.code === 'KeyE') input.waving = false; });
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; input.waving = false; });
+
+// camera orbit (drag) + zoom
+const cam = { yaw: 0.35, pitch: 0.28, dist: 4.2, target: new THREE.Vector3(0, 1.02, 0) };
+let drag = null;
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  drag = { id: e.pointerId, x: e.clientX, y: e.clientY };
+  renderer.domElement.setPointerCapture(e.pointerId);
+});
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (!drag || drag.id !== e.pointerId) return;
+  cam.yaw -= (e.clientX - drag.x) * 0.006;
+  cam.pitch = THREE.MathUtils.clamp(cam.pitch + (e.clientY - drag.y) * 0.004, -0.1, 1.3);
+  drag.x = e.clientX; drag.y = e.clientY;
+});
+const endDrag = (e) => { if (drag && drag.id === e.pointerId) drag = null; };
+renderer.domElement.addEventListener('pointerup', endDrag);
+renderer.domElement.addEventListener('pointercancel', endDrag);
+renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
+addEventListener('wheel', (e) => {
+  cam.dist = THREE.MathUtils.clamp(cam.dist * (1 + Math.sign(e.deltaY) * 0.1), 1.3, 9);
+}, { passive: true });
+
+// touch joystick
+const stick = document.getElementById('stick'), knob = document.getElementById('knob');
+let stickId = null;
+const moveStick = (e) => {
+  const r = stick.getBoundingClientRect();
+  let dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
+  const len = Math.hypot(dx, dy), max = r.width / 2 - 10;
+  if (len > max) { dx *= max / len; dy *= max / len; }
+  knob.style.transform = `translate(${dx}px, ${dy}px)`;
+  input.joyX = dx / max; input.joyY = dy / max;
+};
+stick.addEventListener('pointerdown', (e) => { stickId = e.pointerId; stick.setPointerCapture(e.pointerId); moveStick(e); });
+stick.addEventListener('pointermove', (e) => { if (e.pointerId === stickId) moveStick(e); });
+const endStick = (e) => {
+  if (e.pointerId !== stickId) return;
+  stickId = null; input.joyX = input.joyY = 0; knob.style.transform = '';
+};
+stick.addEventListener('pointerup', endStick);
+stick.addEventListener('pointercancel', endStick);
+document.getElementById('jumpBtn').addEventListener('pointerdown', (e) => { e.preventDefault(); input.jump = true; });
+
+/* =========================================================
+   CHARACTER CONTROLLER
+   ========================================================= */
+const player = { pos: new THREE.Vector3(0, 0, 0), vel: new THREE.Vector3(), vy: 0, yaw: 0, grounded: true };
+
+function resolveCollisions(p) {
+  const lim = ROOM.size / 2 - MOVE.radius;
+  p.x = THREE.MathUtils.clamp(p.x, -lim, lim);
+  p.z = THREE.MathUtils.clamp(p.z, -lim, lim);
+  for (const c of colliders) {
+    const cx = THREE.MathUtils.clamp(p.x, c.minX, c.maxX), cz = THREE.MathUtils.clamp(p.z, c.minZ, c.maxZ);
+    const dx = p.x - cx, dz = p.z - cz, d = Math.hypot(dx, dz);
+    if (d < MOVE.radius && d > 1e-6) { p.x = cx + (dx / d) * MOVE.radius; p.z = cz + (dz / d) * MOVE.radius; }
+  }
+}
+
+const tmpF = new THREE.Vector3(), tmpR = new THREE.Vector3(), wish = new THREE.Vector3();
+function updatePlayer(dt) {
+  let ix = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0) + input.joyX;
+  let iz = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0) - input.joyY;
+  const mag = Math.min(1, Math.hypot(ix, iz));
+
+  tmpF.set(-Math.sin(cam.yaw), 0, -Math.cos(cam.yaw));
+  tmpR.set(Math.cos(cam.yaw), 0, -Math.sin(cam.yaw));
+  wish.copy(tmpF).multiplyScalar(iz).addScaledVector(tmpR, ix);
+  if (wish.lengthSq() > 0) wish.normalize();
+
+  const running = keys.ShiftLeft || keys.ShiftRight || Math.hypot(input.joyX, input.joyY) > 0.92;
+  const waving = input.waving && player.grounded && mag < 0.1;
+  const targetSpeed = waving ? 0 : mag * (running ? MOVE.run : MOVE.walk);
+  const accel = player.grounded ? 10 : 3;
+  const k = 1 - Math.exp(-accel * dt);
+  player.vel.x += (wish.x * targetSpeed - player.vel.x) * k;
+  player.vel.z += (wish.z * targetSpeed - player.vel.z) * k;
+
+  // jump / gravity
+  let justLanded = false;
+  if (input.jump && player.grounded) { player.vy = MOVE.jump; player.grounded = false; }
+  input.jump = false;
+  if (!player.grounded) {
+    player.vy -= MOVE.gravity * dt;
+    player.pos.y += player.vy * dt;
+    if (player.pos.y <= 0) { player.pos.y = 0; player.vy = 0; player.grounded = true; justLanded = true; }
+  }
+
+  player.pos.x += player.vel.x * dt;
+  player.pos.z += player.vel.z * dt;
+  resolveCollisions(player.pos);
+
+  // facing
+  const speed = Math.hypot(player.vel.x, player.vel.z);
+  let turnRate = 0;
+  if (speed > 0.15 && mag > 0.05) {
+    const target = Math.atan2(player.vel.x, player.vel.z);
+    let diff = target - player.yaw;
+    diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+    const step = diff * (1 - Math.exp(-14 * dt));
+    player.yaw += step;
+    turnRate = step / Math.max(dt, 1e-4);
+  }
+
+  girl.root.position.copy(player.pos);
+  girl.root.rotation.y = player.yaw;
+  return {
+    speed, run: THREE.MathUtils.clamp((speed - MOVE.walk) / (MOVE.run - MOVE.walk), 0, 1),
+    grounded: player.grounded, vy: player.vy, justLanded, turnRate, waving,
+  };
+}
+
+/* =========================================================
+   CAMERA
+   ========================================================= */
+const camGoal = new THREE.Vector3();
+function updateCamera(dt) {
+  camGoal.set(player.pos.x, player.pos.y * 0.5 + 1.02, player.pos.z);
+  cam.target.lerp(camGoal, 1 - Math.exp(-8 * dt));
+  const cp = Math.cos(cam.pitch);
+  camera.position.set(
+    cam.target.x + Math.sin(cam.yaw) * cp * cam.dist,
+    cam.target.y + Math.sin(cam.pitch) * cam.dist,
+    cam.target.z + Math.cos(cam.yaw) * cp * cam.dist,
+  );
+  const lim = ROOM.size / 2 - 0.15;
+  camera.position.x = THREE.MathUtils.clamp(camera.position.x, -lim, lim);
+  camera.position.z = THREE.MathUtils.clamp(camera.position.z, -lim, lim);
+  camera.position.y = THREE.MathUtils.clamp(camera.position.y, 0.15, ROOM.wallH + 2);
+  camera.lookAt(cam.target);
+}
+
+/* =========================================================
+   LOOP
+   ========================================================= */
+const clock = new THREE.Clock();
+let time = 0;
+function frame() {
+  const dt = Math.min(clock.getDelta(), 1 / 20);
+  time += dt;
+  const st = updatePlayer(dt);
+  st.time = time;
+  girl.update(dt, st);
+  updateCamera(dt);
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+frame();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// debug handle for tweaking in devtools
+window.__game = { scene, camera, player, cam, colliders, PALETTE };
+</script>
+</body>
+</html>

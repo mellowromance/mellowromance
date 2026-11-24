@@ -1,0 +1,11 @@
+# backup copies of the game made before big edits — git history replaces them
+game/index_before_*.html
+game/index_backup.html
+
+# local / personal settings
+.claude/settings.local.json
+
+# OS clutter
+Thumbs.db
+desktop.ini
+.DS_Store

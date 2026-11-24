@@ -1,0 +1,14 @@
+{
+  "enabledPlugins": {
+    "game-dev@atlas-agents": true,
+    "3d-design@atlas-agents": true
+  },
+  "extraKnownMarketplaces": {
+    "atlas-agents": {
+      "source": {
+        "source": "github",
+        "repo": "MonumentalSystems/Atlas-Agent-Teams"
+      }
+    }
+  }
+}

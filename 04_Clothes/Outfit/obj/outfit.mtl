@@ -1,0 +1,25 @@
+newmtl Outfit_headdress
+Kd 1 1 1
+Ks 0 0 0
+map_Kd ../tex/headdress.png
+
+newmtl Outfit_top
+Kd 1 1 1
+Ks 0 0 0
+map_Kd ../tex/top.png
+
+newmtl Outfit_skirt
+Kd 1 1 1
+Ks 0 0 0
+map_Kd ../tex/skirt.png
+
+newmtl Outfit_legwear
+Kd 1 1 1
+Ks 0 0 0
+map_Kd ../tex/legwear.png
+
+newmtl Outfit_shoes
+Kd 1 1 1
+Ks 0 0 0
+map_Kd ../tex/shoes.png
+
